@@ -1,5 +1,5 @@
 // src/sections/Mvp.jsx — MVP検証用デモページ
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 const CHECK_ITEMS = [
   { id: 'timestamp', label: '投稿日時の表示',   detail: '投稿日時・タイムスタンプが明示されているか' },
@@ -18,9 +18,30 @@ const AI_STEPS = [
 
 // AI判定結果（demo: 要追加確認）
 const AI_FINDINGS = [
-  { tone: 'flag', title: '投稿日時の表示が確認できない',     note: '通常表示される時刻情報の領域に欠落が見られます。' },
-  { tone: 'flag', title: '返信先表示の手がかりがない',       note: 'リプライ構造を示すUI部品が検出されませんでした。' },
-  { tone: 'soft', title: '右端でトリミング痕跡の可能性',     note: 'エッジ周辺で圧縮ノイズの不連続性があります（要追加確認）。' },
+  {
+    id: 'timestamp',
+    tone: 'flag',
+    title: '投稿日時の表示が確認できない',
+    note: '通常表示される時刻情報の領域に欠落が見られます。',
+    caption: '時刻表示の欠落',
+    box: { x: 10, y: 24, w: 50, h: 10 },
+  },
+  {
+    id: 'reply',
+    tone: 'flag',
+    title: '返信先表示の手がかりがない',
+    note: 'リプライ構造を示すUI部品が検出されませんでした。',
+    caption: '返信先表示の欠落',
+    box: { x: 10, y: 34, w: 56, h: 9 },
+  },
+  {
+    id: 'crop',
+    tone: 'soft',
+    title: '右端でトリミング痕跡の可能性',
+    note: 'エッジ周辺で圧縮ノイズの不連続性があります（要追加確認）。',
+    caption: '右端トリミング疑い',
+    box: { x: 92, y: 2, w: 7, h: 96 },
+  },
 ];
 
 const VERDICT = {
@@ -31,12 +52,104 @@ const VERDICT = {
 
 export default function Mvp() {
   const [checks, setChecks] = useState({});
+  const [customItems, setCustomItems] = useState([]);
+  const [customNote, setCustomNote] = useState('');
+  const [manualNotes, setManualNotes] = useState('');
   const [aiStarted, setAiStarted] = useState(false);
   const [stepIdx, setStepIdx] = useState(-1);
   const [aiDone, setAiDone] = useState(false);
+  const [captureBox, setCaptureBox] = useState(null);
+  const [isSelecting, setIsSelecting] = useState(false);
+  const shotRef = useRef(null);
+  const selectionStartRef = useRef(null);
+  const MIN_CAPTURE = 2;
 
   const toggle = (id) =>
     setChecks((p) => ({ ...p, [id]: !p[id] }));
+
+  const toggleCustom = (id) =>
+    setCustomItems((items) =>
+      items.map((item) =>
+        item.id === id ? { ...item, flagged: !item.flagged } : item
+      )
+    );
+
+  const removeCustom = (id) =>
+    setCustomItems((items) => items.filter((item) => item.id !== id));
+
+  const clampPercent = (value) => Math.min(100, Math.max(0, value));
+
+  const getRelativePoint = (clientX, clientY) => {
+    const rect = shotRef.current?.getBoundingClientRect();
+    if (!rect) return null;
+    const x = ((clientX - rect.left) / rect.width) * 100;
+    const y = ((clientY - rect.top) / rect.height) * 100;
+    return { x: clampPercent(x), y: clampPercent(y) };
+  };
+
+  const startCapture = (event) => {
+    const point = getRelativePoint(event.clientX, event.clientY);
+    if (!point) return;
+    event.preventDefault();
+    selectionStartRef.current = point;
+    setCaptureBox({ x: point.x, y: point.y, w: 0, h: 0 });
+    setIsSelecting(true);
+  };
+
+  useEffect(() => {
+    if (!isSelecting) return;
+    const handleMove = (event) => {
+      const start = selectionStartRef.current;
+      const point = getRelativePoint(event.clientX, event.clientY);
+      if (!start || !point) return;
+      const left = Math.min(start.x, point.x);
+      const top = Math.min(start.y, point.y);
+      const w = Math.abs(point.x - start.x);
+      const h = Math.abs(point.y - start.y);
+      setCaptureBox({ x: left, y: top, w, h });
+    };
+    const handleUp = () => {
+      selectionStartRef.current = null;
+      setIsSelecting(false);
+      setCaptureBox((box) => {
+        if (!box || box.w < MIN_CAPTURE || box.h < MIN_CAPTURE) return null;
+        return box;
+      });
+    };
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', handleUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', handleUp);
+    };
+  }, [isSelecting]);
+
+  const normalizeBox = (box) => ({
+    x: Math.round(box.x * 10) / 10,
+    y: Math.round(box.y * 10) / 10,
+    w: Math.round(box.w * 10) / 10,
+    h: Math.round(box.h * 10) / 10,
+  });
+
+  const formatBox = (box) =>
+    `x:${box.x.toFixed(1)}% y:${box.y.toFixed(1)}% w:${box.w.toFixed(1)}% h:${box.h.toFixed(1)}%`;
+
+  const addCustomItem = () => {
+    if (!captureBox || captureBox.w < MIN_CAPTURE || captureBox.h < MIN_CAPTURE) return;
+    const detail = customNote.trim();
+    const normalized = normalizeBox(captureBox);
+    setCustomItems((items) => [
+      ...items,
+      {
+        id: `custom-${Date.now()}`,
+        box: normalized,
+        detail,
+        flagged: false,
+      },
+    ]);
+    setCaptureBox(null);
+    setCustomNote('');
+  };
 
   const startAi = () => {
     setAiDone(false);
@@ -63,10 +176,13 @@ export default function Mvp() {
     return () => clearTimeout(t);
   }, [aiStarted, stepIdx]);
 
-  const manualFlagged = useMemo(
-    () => CHECK_ITEMS.filter((c) => checks[c.id]).length,
-    [checks]
-  );
+  const manualFlagged = useMemo(() => {
+    const base = CHECK_ITEMS.filter((c) => checks[c.id]).length;
+    const extra = customItems.filter((c) => c.flagged).length;
+    return base + extra;
+  }, [checks, customItems]);
+  const manualTotal = CHECK_ITEMS.length + customItems.length;
+  const canAddCustom = Boolean(captureBox && captureBox.w >= MIN_CAPTURE && captureBox.h >= MIN_CAPTURE);
 
   const aiFlagged = AI_FINDINGS.filter((f) => f.tone === 'flag').length;
   const aiSoft = AI_FINDINGS.filter((f) => f.tone === 'soft').length;
@@ -108,6 +224,20 @@ export default function Mvp() {
             <span className="mvp-meta">受領: 2026-05-19 14:32 · 担当: 山口弁護士</span>
           </div>
 
+          <div className="mvp-brief">
+            <div className="brief-label">案件概要</div>
+            <div className="brief-title">名誉棄損・誹謗中傷の投稿スクリーンショット</div>
+            <p className="brief-desc">
+              依頼者が提出したスクリーンショットに対して、投稿日時や返信先の欠落、
+              トリミング痕跡の有無を優先度高く確認するケースを想定しています。
+            </p>
+            <div className="brief-tags">
+              <span>争点: 表示欠落</span>
+              <span>媒体: SNS投稿</span>
+              <span>目的: 追加確認の優先順位付け</span>
+            </div>
+          </div>
+
           <div className="mvp-grid">
             {/* ====== 左: 手作業チェック ====== */}
             <div className="mvp-pane mvp-manual">
@@ -133,12 +263,120 @@ export default function Mvp() {
                     </div>
                   </li>
                 ))}
+                {customItems.map((c) => (
+                  <li
+                    key={c.id}
+                    className={`check-item check-item-custom ${c.flagged ? 'flagged' : ''}`}
+                    onClick={() => toggleCustom(c.id)}
+                  >
+                    <span className="check-box" aria-hidden>
+                      {c.flagged ? '!' : ''}
+                    </span>
+                    <div className="check-body">
+                      <div className="check-label">
+                        画面キャプチャ
+                        <span className="check-tag">任意</span>
+                      </div>
+                      <div className="check-capture">
+                        <div className="capture-mini">
+                          <div
+                            className="capture-mini-box"
+                            style={{
+                              left: `${c.box.x}%`,
+                              top: `${c.box.y}%`,
+                              width: `${c.box.w}%`,
+                              height: `${c.box.h}%`,
+                            }}
+                          />
+                        </div>
+                        <div className="capture-meta">{formatBox(c.box)}</div>
+                      </div>
+                      <div className="check-detail">{c.detail || '補足なし'}</div>
+                    </div>
+                    <button
+                      type="button"
+                      className="check-remove"
+                      aria-label="任意チェックを削除"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeCustom(c.id);
+                      }}
+                    >
+                      ×
+                    </button>
+                  </li>
+                ))}
               </ul>
+
+              <div className="manual-flex">
+                <div className="manual-add">
+                  <div className="manual-add-title">任意チェックを追加</div>
+                  <div className="form-group compact">
+                    <label>観点（画面キャプチャ）</label>
+                    <div className={`capture-select ${canAddCustom ? 'ready' : ''}`}>
+                      {captureBox ? (
+                        <div className="capture-mini">
+                          <div
+                            className="capture-mini-box"
+                            style={{
+                              left: `${captureBox.x}%`,
+                              top: `${captureBox.y}%`,
+                              width: `${captureBox.w}%`,
+                              height: `${captureBox.h}%`,
+                            }}
+                          />
+                        </div>
+                      ) : (
+                        <div className="capture-placeholder">
+                          中央のスクショ上をドラッグして範囲指定
+                        </div>
+                      )}
+                    </div>
+                    {captureBox && (
+                      <div className="capture-meta">
+                        {formatBox(captureBox)} / ドラッグで再指定
+                      </div>
+                    )}
+                  </div>
+                  <div className="form-group compact">
+                    <label htmlFor="custom-note">補足（言葉の説明）</label>
+                    <textarea
+                      id="custom-note"
+                      rows={3}
+                      value={customNote}
+                      onChange={(e) => setCustomNote(e.target.value)}
+                      placeholder="例: 投稿文と文脈が一致しない"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={addCustomItem}
+                    disabled={!canAddCustom}
+                  >
+                    任意チェックを追加
+                  </button>
+                </div>
+
+                <div className="manual-notes">
+                  <div className="manual-add-title">自由記述メモ</div>
+                  <div className="form-group compact">
+                    <label htmlFor="manual-notes">観察メモ</label>
+                    <textarea
+                      id="manual-notes"
+                      rows={4}
+                      value={manualNotes}
+                      onChange={(e) => setManualNotes(e.target.value)}
+                      placeholder="業務上気になる点や未整理の観察をメモ"
+                    />
+                  </div>
+                </div>
+              </div>
 
               <div className="manual-summary">
                 <div>
                   <span className="ms-key">違和感あり</span>
-                  <span className={`ms-val ${manualFlagged > 0 ? 'warn' : ''}`}>{manualFlagged} / {CHECK_ITEMS.length}</span>
+                  <span className={`ms-val ${manualFlagged > 0 ? 'warn' : ''}`}>{manualFlagged} / {manualTotal}</span>
                 </div>
                 <div className="ms-hint">
                   {manualFlagged === 0 && 'チェック未実施 / 違和感なし'}
@@ -156,7 +394,10 @@ export default function Mvp() {
                 <p>仮の検証画像（プレースホルダ）</p>
               </div>
 
-              <div className={`shot-frame ${aiStarted && !aiDone ? 'scanning' : ''} ${aiDone ? 'analyzed' : ''}`}>
+              <div
+                ref={shotRef}
+                className={`shot-frame ${aiStarted && !aiDone ? 'scanning' : ''} ${aiDone ? 'analyzed' : ''}`}
+              >
                 <div className="shot-mock">
                   <div className="shot-bar">
                     <div className="shot-bar-dot" />
@@ -179,23 +420,66 @@ export default function Mvp() {
                   <div className="shot-footer">
                     <span>♡</span><span>↺</span><span>↗</span>
                   </div>
-                  <div className="shot-crop-hint" title="右端でトリミング疑い" />
                 </div>
+                <div
+                  className={`shot-capture-layer ${isSelecting ? 'selecting' : ''}`}
+                  onMouseDown={startCapture}
+                >
+                  {captureBox && (
+                    <div
+                      className="capture-rect"
+                      style={{
+                        left: `${captureBox.x}%`,
+                        top: `${captureBox.y}%`,
+                        width: `${captureBox.w}%`,
+                        height: `${captureBox.h}%`,
+                      }}
+                    >
+                      <span className="capture-label">任意キャプチャ</span>
+                    </div>
+                  )}
+                </div>
+                {customItems.length > 0 && (
+                  <div className="shot-customs">
+                    {customItems.map((c, i) => (
+                      <div
+                        key={c.id}
+                        className="det-box det-custom"
+                        style={{
+                          left: `${c.box.x}%`,
+                          top: `${c.box.y}%`,
+                          width: `${c.box.w}%`,
+                          height: `${c.box.h}%`,
+                        }}
+                      >
+                        <span className="det-label">任意 {i + 1}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {aiDone && (
+                  <div className="shot-detections">
+                    {AI_FINDINGS.map((f) => (
+                      <div
+                        key={f.id}
+                        className={`det-box det-${f.tone}`}
+                        style={{
+                          left: `${f.box.x}%`,
+                          top: `${f.box.y}%`,
+                          width: `${f.box.w}%`,
+                          height: `${f.box.h}%`,
+                        }}
+                      >
+                        <span className="det-label">{f.caption}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {aiStarted && !aiDone && <div className="shot-scan" />}
                 {aiStarted && <div className="shot-grid" />}
               </div>
 
               <div className="mvp-actions">
-                {!aiStarted && (
-                  <button className="btn btn-primary" onClick={startAi}>
-                    AI判定モードで分析 <span className="arrow">→</span>
-                  </button>
-                )}
-                {aiStarted && (
-                  <button className="btn" onClick={resetAi}>
-                    最初からやり直す
-                  </button>
-                )}
                 <span className="mvp-actions-hint">外部送信なし / ローカル試作</span>
               </div>
             </div>
@@ -208,9 +492,23 @@ export default function Mvp() {
                 <p>あらかじめ定義したルールに沿った自動抽出風の表示です。</p>
               </div>
 
+              <div className="mvp-actions ai-actions">
+                {!aiStarted && (
+                  <button className="btn btn-primary" onClick={startAi}>
+                    AI判定を開始 <span className="arrow">→</span>
+                  </button>
+                )}
+                {aiStarted && (
+                  <button className="btn" onClick={resetAi}>
+                    最初からやり直す
+                  </button>
+                )}
+                <span className="mvp-actions-hint">外部送信なし / ローカル試作</span>
+              </div>
+
               {!aiStarted && (
                 <div className="ai-idle">
-                  中央の「AI判定モードで分析」ボタンから開始してください。<br />
+                  このパネルの「AI判定を開始」ボタンから実行してください。<br />
                   4工程・約3秒の進行表示で結果を提示します。
                 </div>
               )}
